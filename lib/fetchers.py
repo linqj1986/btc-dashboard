@@ -124,7 +124,7 @@ def _parse_klines(raw: list) -> dict:
     return {"dates": dates, "close": close}
 
 
-def binance_klines(since: str = "2018-02-01") -> dict:
+def binance_klines(since: str = "2018-02-01", page_size: int = 1000) -> dict:
     """Binance BTCUSDT 日线(UTC 自然日), startTime 游标分页拉全史。"""
     from datetime import datetime, timezone
     ts = int(datetime(*map(int, since.split("-")),
@@ -132,14 +132,14 @@ def binance_klines(since: str = "2018-02-01") -> dict:
     dates, close = [], []
     while True:
         url = (f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d"
-               f"&startTime={ts}&limit=1000")
+               f"&startTime={ts}&limit={page_size}")
         raw = net.get_json(url, cache_name=None, timeout=30)
         if not raw:
             break
         page = _parse_klines(raw)
         dates += page["dates"]
         close += page["close"]
-        if len(raw) < 1000:
+        if len(raw) < page_size:
             break
         ts = int(raw[-1][0]) + 86400000
     return {"dates": dates, "close": close}

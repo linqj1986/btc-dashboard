@@ -139,7 +139,7 @@ def test_binance_klines_pagination():
     orig = netmod.get_json
     netmod.get_json = fake
     try:
-        out = fetchers.binance_klines(since="2018-02-01")
+        out = fetchers.binance_klines(since="2018-02-01", page_size=2)
     finally:
         netmod.get_json = orig
     assert len(calls) == 2
