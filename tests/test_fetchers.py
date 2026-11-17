@@ -136,11 +136,13 @@ def test_binance_klines_pagination():
         return [[ts, "1", "1", "1", "12", "1", ts + 86399999, "0", 0, "0", "0", "0"]]
 
     import lib.net as netmod
+    import pytest
+    from pathlib import Path
     orig = netmod.get_json
     netmod.get_json = fake
-    try:
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(netmod, "CACHE_DIR", Path(tmp_dir) if (tmp_dir := __import__("tempfile").mkdtemp()) else None)
         out = fetchers.binance_klines(since="2018-02-01", page_size=2)
-    finally:
-        netmod.get_json = orig
+    netmod.get_json = orig
     assert len(calls) == 2
     assert out["close"] == [10.0, 11.0, 12.0]
