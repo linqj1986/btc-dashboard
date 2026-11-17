@@ -42,7 +42,7 @@ def _parse_cm(text: str) -> dict:
 
 
 def coinmetrics(*, force: bool = False, offline: bool = False) -> dict:
-    text = net.get(CM_URL, cache_name="cm_btc.csv", timeout=120,
+    text = net.get(CM_URL, cache_name="cm_btc.csv", timeout=240,
                    **_ckw(force, offline)).decode("utf-8-sig")
     return _parse_cm(text)
 
@@ -175,27 +175,24 @@ def _parse_cb_candles(raw: list) -> dict:
 
 
 def coinbase_klines(since: str = "2018-02-01") -> dict:
-    """Coinbase Exchange BTC-USD 日线, end 游标倒序分页(300/页)。"""
+    """Coinbase Exchange BTC-USD 日线。API 约束: start/end 窗口 ≤300 根,
+    故按 300 天滚动窗口向前翻页, 页边界重复日去重。"""
     from datetime import date, timedelta
     d0 = date(*map(int, since.split("-")))
     end = datetime.now(timezone.utc).date() + timedelta(days=1)
-    all_dates, all_close = [], []
+    merged = {}
     while True:
+        start = max(d0, end - timedelta(days=299))
         url = (f"https://api.exchange.coinbase.com/products/BTC-USD/candles"
-               f"?granularity=86400&start={d0.isoformat()}&end={end.isoformat()}")
+               f"?granularity=86400&start={start.isoformat()}&end={end.isoformat()}")
         raw = net.get_json(url, cache_name=None, timeout=30)
         if not raw:
             break
-        page = _parse_cb_candles(raw)
-        all_dates = page["dates"] + all_dates
-        all_close = page["close"] + all_close
-        oldest = date(*map(int, page["dates"][0].split("-")))
-        if len(raw) < 300 or oldest <= d0:
+        for c in raw:
+            d = datetime.fromtimestamp(int(c[0]), timezone.utc).date().isoformat()
+            merged[d] = float(c[4])
+        if start == d0:
             break
-        end = oldest  # 下一页以最早日为终点(该日本身会重复, 去重)
-    # 去重(页边界)
-    seen = {}
-    for d, c in zip(all_dates, all_close):
-        seen[d] = c
-    ks = sorted(seen)
-    return {"dates": ks, "close": [seen[k] for k in ks]}
+        end = start
+    ks = sorted(k for k in merged if k >= since)
+    return {"dates": ks, "close": [merged[k] for k in ks]}

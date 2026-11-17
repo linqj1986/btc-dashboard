@@ -111,3 +111,25 @@ def test_live_sources():
     assert 1000 < px["price"] < 10_000_000
     kl = fetchers.coinbase_klines(since="2026-10-01")
     assert len(kl["close"]) > 30
+
+
+def test_coinbase_klines_window(monkeypatch, tmp_path):
+    """分页窗口必须 <=300 天(API 约束), 翻页到 since 为止, 去重。"""
+    import lib.net as netmod
+    monkeypatch.setattr(netmod, "CACHE_DIR", tmp_path)
+    urls = []
+
+    def fake(url, **kw):
+        urls.append(url)
+        # 返回窗口内 3 根假数据
+        return [[1, 0, 0, 0, len(urls), 0]] * 1
+
+    monkeypatch.setattr(netmod, "get_json", fake)
+    out = fetchers.coinbase_klines(since="2018-02-01")
+    assert len(urls) >= 10  # 2018 至今 ~3200 天 → ≥11 页
+    for u in urls:
+        start = u.split("start=")[1].split("&")[0]
+        end = u.split("end=")[1]
+        from datetime import date
+        d = (date.fromisoformat(end) - date.fromisoformat(start)).days
+        assert d <= 299, (start, end)
