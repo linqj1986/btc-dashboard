@@ -60,33 +60,50 @@ def _flow_waves(fund: list, i: int) -> tuple[float, float]:
     return net30(events[-2]), net30(events[-1])
 
 
-def s4_signal(fund: list, i: int, price: list | None = None,
-              dd_window: int = 365, low_window: int = 90) -> float:
-    """S4 = max(程度层, 背离层), 各 0-20。
-    程度层: 资金总量不在近 dd_window 新低(回撤已止)时, 按 365 天峰值回撤 5%起算/15%满。
-    背离层: 价格创 90 天新低 且 本波资金净流出 < 前一波(抛压衰竭) → 20;
-            背离退出(价格收复90天低点/资金回流) → 0。
-    页面锚: 2026-11 净流出中且总量新低 → 程度0/背离0 → S4≈0.1≈0。"""
-    cur = fund[i]
-    if cur is None:
-        return 0.0
-    look = [v for v in fund[max(0, i - dd_window):i + 1] if v is not None]
-    if not look:
-        return 0.0
-    # 程度层
-    recent = [v for v in fund[max(0, i - 30):i + 1] if v is not None]
-    at_low = recent and cur <= min(recent) * 1.001
-    extent = 0.0 if at_low else s4_extent((1 - cur / max(look)) * 100)
-    # 背离层
-    divergence = 0.0
-    if price is not None and i >= low_window and price[i] is not None:
-        w = [v for v in price[i - low_window:i + 1] if v is not None]
-        price_new_low = w and price[i] <= min(w)
-        if price_new_low:
+def s4_series(fund: list, price: list, dd_window: int = 365,
+              low_window: int = 90, at_low_window: int = 60) -> list:
+    """S4 全史序列 = max(程度层, 背离层)。
+    程度层: 总量脱离近 at_low_window 天低点带后, 按 365 天峰值回撤 5%起算/15%满。
+    背离层(状态机): 价格创 low_window 天新低 且 本波流出浅于前波 → 进入 20 分态;
+      退出: 价格收复该低点 / 资金 30 天净转正 / 二次流出(本波深于前波)。"""
+    out = []
+    div_on = False
+    div_low = None
+    for i in range(len(fund)):
+        cur = fund[i]
+        if cur is None:
+            out.append(0.0)
+            continue
+        look = [v for v in fund[max(0, i - dd_window):i + 1] if v is not None]
+        recent = [v for v in fund[max(0, i - at_low_window):i + 1] if v is not None]
+        at_low = recent and cur <= min(recent) * 1.001
+        extent = 0.0
+        if look and not at_low:
+            extent = s4_extent((1 - cur / max(look)) * 100)
+        # 背离状态机
+        if price is not None and i >= low_window and price[i] is not None:
+            w = [v for v in price[i - low_window:i + 1] if v is not None]
+            price_new_low = w and price[i] <= min(w)
             prev_flow, last_flow = _flow_waves(fund, i)
-            if prev_flow < 0 and last_flow < 0 and last_flow > prev_flow:
-                divergence = 20.0
-    return max(extent, divergence)
+            net_flow = fund[i] - fund[max(0, i - 30)] if fund[max(0, i - 30)] is not None else 0.0
+            if not div_on:
+                if price_new_low and prev_flow < 0 and last_flow < 0 and last_flow > prev_flow:
+                    div_on = True
+                    div_low = price[i]
+            else:
+                recov = div_low is not None and price[i] > div_low * 1.03
+                reflux = net_flow > 0
+                second = last_flow <= prev_flow
+                if recov or reflux or second:
+                    div_on = False
+                    div_low = None
+        out.append(max(extent, 20.0 if div_on else 0.0))
+    return out
+
+
+def s4_signal(fund: list, i: int, price: list | None = None, **kw) -> float:
+    """兼容单日调用: 全史计算取第 i 天。"""
+    return s4_series(fund, price, **kw)[i]
 
 
 def compose(parts: dict) -> float:
