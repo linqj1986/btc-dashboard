@@ -1,6 +1,7 @@
 """BTC 数据源: CoinMetrics(代理) / alternative.me(代理) / DefiLlama(直连) / Binance(实时价)。"""
 import csv
 import io
+import json
 from datetime import datetime, timezone
 
 from . import net
@@ -124,8 +125,13 @@ def _parse_klines(raw: list) -> dict:
     return {"dates": dates, "close": close}
 
 
-def binance_klines(since: str = "2018-02-01", page_size: int = 1000) -> dict:
-    """Binance BTCUSDT 日线(UTC 自然日), startTime 游标分页拉全史。"""
+def binance_klines(since: str = "2018-02-01", page_size: int = 1000,
+                   offline: bool = False) -> dict:
+    """Binance BTCUSDT 日线(UTC 自然日), startTime 游标分页拉全史; 结果整体缓存 12h。"""
+    cache = net.CACHE_DIR / "binance_klines.json"
+    import time
+    if cache.exists() and (offline or time.time() - cache.stat().st_mtime <= 12 * 3600):
+        return json.loads(cache.read_text(encoding="utf-8"))
     from datetime import datetime, timezone
     ts = int(datetime(*map(int, since.split("-")),
                       tzinfo=timezone.utc).timestamp() * 1000)
@@ -142,4 +148,7 @@ def binance_klines(since: str = "2018-02-01", page_size: int = 1000) -> dict:
         if len(raw) < page_size:
             break
         ts = int(raw[-1][0]) + 86400000
-    return {"dates": dates, "close": close}
+    out = {"dates": dates, "close": close}
+    net.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(out), encoding="utf-8")
+    return out
