@@ -41,15 +41,25 @@ def align(points: dict, grid: list) -> list:
 
 
 def fetch_all(force=False, offline=False):
-    kl = fetchers.binance_klines(since="2018-02-01", offline=offline)
-    cm = fetchers.coinmetrics(force=force, offline=offline)
-    return {
-        "kl": kl,
-        "px24": fetchers.btc_price_now() if not offline else None,
-        "cm": cm,
-        "fng": fetchers.fear_greed(force=force, offline=offline),
-        "fund": fetchers.stablecoins(force=force, offline=offline),
-    }
+    """分源拉取, 单源失败打印明确错误后中止(便于 CI 日志定位)。"""
+    out = {}
+    steps = [
+        ("klines", lambda: fetchers.binance_klines(since="2018-02-01", offline=offline)),
+        ("coinmetrics", lambda: fetchers.coinmetrics(force=force, offline=offline)),
+        ("price24h", lambda: fetchers.btc_price_now() if not offline else None),
+        ("fear_greed", lambda: fetchers.fear_greed(force=force, offline=offline)),
+        ("stablecoins", lambda: fetchers.stablecoins(force=force, offline=offline)),
+    ]
+    for name, fn in steps:
+        try:
+            out[name] = fn()
+            print(f"[fetch] {name}: OK", flush=True)
+        except Exception as e:
+            print(f"[fetch] {name}: FAILED — {type(e).__name__}: {e}", flush=True)
+            raise
+    return {"kl": out["klines"], "cm": out["coinmetrics"],
+            "px24": out["price24h"], "fng": out["fear_greed"],
+            "fund": out["stablecoins"]}
 
 
 def accuracy(cd):
