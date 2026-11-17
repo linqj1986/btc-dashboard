@@ -80,18 +80,21 @@ def _parse_price24h(raw: dict) -> dict:
     return {"price": float(raw["lastPrice"]), "chg24h_pct": float(raw["priceChangePercent"])}
 
 
+def _parse_cb_stats(raw: dict) -> dict:
+    o, last = float(raw["open"]), float(raw["last"])
+    return {"price": last, "chg24h_pct": (last / o - 1) * 100 if o else 0.0}
+
+
 def btc_price_now() -> dict:
-    """Binance 24h 行情; 失败降级 CoinGecko。"""
+    """24h 行情: Binance → Coinbase Exchange(美国IP对 Binance 451 时)。"""
     try:
         raw = net.get_json("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT",
                            cache_name=None, timeout=20)
         return _parse_price24h(raw)
     except Exception:
-        raw = net.get_json("https://api.coingecko.com/api/v3/simple/price"
-                           "?ids=bitcoin&vs_currencies=usd&include_24hr_change=true",
+        raw = net.get_json("https://api.exchange.coinbase.com/products/BTC-USD/stats",
                            cache_name=None, timeout=20)
-        usd = raw["bitcoin"]
-        return {"price": float(usd["usd"]), "chg24h_pct": float(usd["usd_24h_change"])}
+        return _parse_cb_stats(raw)
 
 
 def _parse_snapshot(raw: dict) -> dict[str, dict]:
@@ -116,8 +119,9 @@ def holder_costs_snapshot(*, force: bool = False, offline: bool = False) -> dict
         return None
 
 
+# ── 日线全史 ──────────────────────────────────────────────
+
 def _parse_klines(raw: list) -> dict:
-    from datetime import datetime, timezone
     dates, close = [], []
     for k in raw:
         dates.append(datetime.fromtimestamp(int(k[0] / 1000), timezone.utc).date().isoformat())
@@ -127,12 +131,23 @@ def _parse_klines(raw: list) -> dict:
 
 def binance_klines(since: str = "2018-02-01", page_size: int = 1000,
                    offline: bool = False) -> dict:
-    """Binance BTCUSDT 日线(UTC 自然日), startTime 游标分页拉全史; 结果整体缓存 12h。"""
-    cache = net.CACHE_DIR / "binance_klines.json"
+    """BTC 日线全史(UTC 自然日), 结果整体缓存 12h。
+    主源 Binance; 失败降级 Coinbase Exchange。"""
     import time
+    cache = net.CACHE_DIR / "binance_klines.json"
     if cache.exists() and (offline or time.time() - cache.stat().st_mtime <= 12 * 3600):
         return json.loads(cache.read_text(encoding="utf-8"))
-    from datetime import datetime, timezone
+    try:
+        out = _binance_klines(since, page_size)
+    except Exception:
+        out = coinbase_klines(since)
+    net.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(out), encoding="utf-8")
+    return out
+
+
+def _binance_klines(since: str = "2018-02-01", page_size: int = 1000) -> dict:
+    """Binance BTCUSDT 日线, startTime 游标分页。"""
     ts = int(datetime(*map(int, since.split("-")),
                       tzinfo=timezone.utc).timestamp() * 1000)
     dates, close = [], []
@@ -148,7 +163,39 @@ def binance_klines(since: str = "2018-02-01", page_size: int = 1000,
         if len(raw) < page_size:
             break
         ts = int(raw[-1][0]) + 86400000
-    out = {"dates": dates, "close": close}
-    net.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(out), encoding="utf-8")
-    return out
+    return {"dates": dates, "close": close}
+
+
+def _parse_cb_candles(raw: list) -> dict:
+    """Coinbase candles: [time, low, high, open, close, vol] 倒序。"""
+    pts = sorted(raw, key=lambda c: c[0])
+    dates = [datetime.fromtimestamp(int(c[0]), timezone.utc).date().isoformat() for c in pts]
+    close = [float(c[4]) for c in pts]
+    return {"dates": dates, "close": close}
+
+
+def coinbase_klines(since: str = "2018-02-01") -> dict:
+    """Coinbase Exchange BTC-USD 日线, end 游标倒序分页(300/页)。"""
+    from datetime import date, timedelta
+    d0 = date(*map(int, since.split("-")))
+    end = datetime.now(timezone.utc).date() + timedelta(days=1)
+    all_dates, all_close = [], []
+    while True:
+        url = (f"https://api.exchange.coinbase.com/products/BTC-USD/candles"
+               f"?granularity=86400&start={d0.isoformat()}&end={end.isoformat()}")
+        raw = net.get_json(url, cache_name=None, timeout=30)
+        if not raw:
+            break
+        page = _parse_cb_candles(raw)
+        all_dates = page["dates"] + all_dates
+        all_close = page["close"] + all_close
+        oldest = date(*map(int, page["dates"][0].split("-")))
+        if len(raw) < 300 or oldest <= d0:
+            break
+        end = oldest  # 下一页以最早日为终点(该日本身会重复, 去重)
+    # 去重(页边界)
+    seen = {}
+    for d, c in zip(all_dates, all_close):
+        seen[d] = c
+    ks = sorted(seen)
+    return {"dates": ks, "close": [seen[k] for k in ks]}
